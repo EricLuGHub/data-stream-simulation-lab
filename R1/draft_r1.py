@@ -1,16 +1,24 @@
 """
-IMC Prosperity 4 — Round 1 Strategy v3
+IMC Prosperity 4 — Round 1 Strategy v4
 
-Trial 2 results (2682 total, up from 2098):
-  ASH: 904 (down from 988). make_spread=1 was too tight — adverse selection.
-       Net position 27 at end = too much inventory buildup.
-  PEPPER: 1778 (up from 1110). Anchoring fix worked. But position oscillated
-          between -3 and +50 instead of riding the trend. Mostly spread profit.
+Trial 3 results (3232 total, up from 2682):
+  ASH: 1226 (up from 904). Reverting make_spread to 2 worked. But net pos 23
+       still too high — inventory problem persists.
+  PEPPER: 2006 (up from 1778). But went SHORT to -15 in first 30K timestamps
+          despite target +40. Market took our asks despite small size.
+          Trend capture still far below theoretical max (5000).
 
-v3 changes:
-  ASH: Revert make_spread to 2, increase position_skew to reduce inventory.
-  PEPPER: Time-varying position target — aggressively long early (lots of trend
-          left to capture), flatten toward end. This captures trend + spread.
+New ASH analysis insights:
+  - deviation_ar1_beta=1.0 → pure random walk, NOT mean-reverting to fixed level
+  - cheap_edge_net=-15 → NO edge after spread costs. Profit is 100% passive MM.
+  - return_autocorr=-0.5 → bid-ask bounce, good for market makers
+
+v4 changes:
+  ASH: Add hard inventory limits. When |position| > 30, only quote the
+       reducing side. Pure spread collection, minimize inventory risk.
+  PEPPER: When far below target, suppress sell orders entirely.
+          Add trend_edge to fair value — willing to pay above mid since we
+          know price is going up. Get long faster to capture the trend.
 """
 
 from datamodel import OrderDepth, TradingState, Order
@@ -27,25 +35,25 @@ PARAMS = {
     "ASH_COATED_OSMIUM": {
         "ema_alpha": 0.4,
         "take_width": 0,
-        "make_spread": 2,           # v2 was 1 → hurt per-unit profit, revert
-        "make_size": 35,            # v2 was 40 → slight reduction
-        "position_skew": 2.5,       # v2 was 1.5 → stronger to reduce inventory
+        "make_spread": 2,
+        "make_size": 35,
+        "position_skew": 2.5,
         "imbalance_weight": 1.0,
+        "hard_limit": 30,           # NEW: suppress one side when exceeded
     },
     "INTARIAN_PEPPER_ROOT": {
-        "trend_slope": 0.001,       # +1 per 1000 timestamps
+        "trend_slope": 0.001,
         "take_width": 0,
         "make_spread": 2,
         "make_size": 35,
         "position_skew": 2.0,
         "ema_alpha": 0.3,
         "trend_weight": 0.5,
-        # Time-varying trend capture: target position decays over time
-        # Early: target = +40 (ride the trend up)
-        # Late: target = 0 (flatten to lock in gains)
-        "trend_target_start": 40,   # Target position at t=0
-        "trend_target_end": 0,      # Target position at end of day
-        "max_timestamp": 999900,    # End of trading day
+        "trend_target_start": 40,
+        "trend_target_end": 0,
+        "max_timestamp": 999900,
+        "trend_edge": 4,            # NEW: shift FV up to pay for trend
+        "position_gap_threshold": 15,  # NEW: suppress wrong side when this far from target
     },
 }
 
@@ -91,12 +99,16 @@ class Trader:
             orders.extend(take_orders)
 
             # --- Phase 2: Passive market making ---
-            if product == "INTARIAN_PEPPER_ROOT":
+            if product == "ASH_COATED_OSMIUM":
+                make_orders = self._make_orders_ash(
+                    product, fair_value, position, limit, params
+                )
+            elif product == "INTARIAN_PEPPER_ROOT":
                 make_orders = self._make_orders_trending(
                     product, fair_value, position, limit, params, state.timestamp
                 )
             else:
-                make_orders = self._make_orders(
+                make_orders = self._make_orders_ash(
                     product, fair_value, position, limit, params
                 )
             orders.extend(make_orders)
@@ -114,7 +126,8 @@ class Trader:
     # ── Fair value models ──────────────────────────────────────────────
 
     def _ash_fair_value(self, order_depth: OrderDepth, trader_data: dict) -> float:
-        """ASH: EMA of mid price + book imbalance (mean reversion)."""
+        """ASH: EMA of mid price + book imbalance. Pure random walk — no
+        directional edge, profit only from passive spread collection."""
         mid = self._get_mid_price(order_depth)
         if mid is None:
             return trader_data.get("ASH_ema", 10000)
@@ -132,12 +145,12 @@ class Trader:
     def _pepper_fair_value(
         self, order_depth: OrderDepth, trader_data: dict, timestamp: int
     ) -> float:
-        """PEPPER: Anchor on first observed price + linear trend, blended with EMA."""
+        """PEPPER: Anchor + trend projection blended with EMA, plus a trend_edge
+        that makes us willing to pay above mid (since price is going up)."""
         params = PARAMS["INTARIAN_PEPPER_ROOT"]
 
         mid = self._get_mid_price(order_depth)
 
-        # Anchor on first observation
         if "PEPPER_anchor_price" not in trader_data and mid is not None:
             trader_data["PEPPER_anchor_price"] = mid
             trader_data["PEPPER_anchor_ts"] = timestamp
@@ -157,11 +170,19 @@ class Trader:
         trader_data["PEPPER_ema"] = ema
 
         w = params["trend_weight"]
-        return w * trend_estimate + (1 - w) * ema
+        base_fv = w * trend_estimate + (1 - w) * ema
+
+        # Add trend edge: we know price goes up, so fair value is higher
+        # than current mid. Scale down as we approach end of day.
+        max_ts = params["max_timestamp"]
+        remaining = max(0, 1 - timestamp / max_ts) if max_ts > 0 else 0
+        edge = params.get("trend_edge", 0) * remaining
+
+        return base_fv + edge
 
     # ── Order generation ───────────────────────────────────────────────
 
-    def _make_orders(
+    def _make_orders_ash(
         self,
         product: str,
         fair_value: float,
@@ -169,11 +190,13 @@ class Trader:
         limit: int,
         params: dict,
     ) -> List[Order]:
-        """Standard mean-reversion market making (ASH)."""
+        """ASH: Pure spread collection with hard inventory limits.
+        When |position| exceeds hard_limit, only quote the reducing side."""
         orders: List[Order] = []
         half_spread = params["make_spread"]
         base_size = params["make_size"]
         skew_factor = params.get("position_skew", 1.0)
+        hard_limit = params.get("hard_limit", limit)
 
         position_ratio = position / limit
         price_adjustment = -position_ratio * skew_factor
@@ -188,9 +211,13 @@ class Trader:
         sell_size = int(base_size * (1 + position_ratio))
         sell_size = max(1, min(sell_size, limit + position))
 
-        if buy_size > 0:
+        # Hard inventory control: suppress the accumulating side
+        suppress_buy = position >= hard_limit
+        suppress_sell = position <= -hard_limit
+
+        if buy_size > 0 and not suppress_buy:
             orders.append(Order(product, bid_price, buy_size))
-        if sell_size > 0:
+        if sell_size > 0 and not suppress_sell:
             orders.append(Order(product, ask_price, -sell_size))
 
         return orders
@@ -205,14 +232,11 @@ class Trader:
         timestamp: int,
     ) -> List[Order]:
         """
-        Trend-aware market making (PEPPER).
+        PEPPER: Trend-aware market making with position gating.
 
-        Uses a time-varying target position:
-          - Early in day: target = +40 (accumulate long to ride trend)
-          - Late in day: target = 0 (flatten to lock in gains)
-
-        The position skew is applied relative to this moving target,
-        so we naturally buy when below target and sell when above.
+        Time-varying target (long early, flat late) + suppress the wrong side
+        when position is far from target. This prevents the market from
+        pushing us short when we need to be long.
         """
         orders: List[Order] = []
         half_spread = params["make_spread"]
@@ -226,7 +250,7 @@ class Trader:
         progress = min(timestamp / max_ts, 1.0) if max_ts > 0 else 0
         target_position = target_start + (target_end - target_start) * progress
 
-        # Position ratio relative to target (not zero)
+        # Position ratio relative to target
         deviation = position - target_position
         position_ratio = deviation / limit
 
@@ -242,9 +266,14 @@ class Trader:
         sell_size = int(base_size * (1 + position_ratio))
         sell_size = max(1, min(sell_size, limit + position))
 
-        if buy_size > 0:
+        # Position gating: suppress wrong side when far from target
+        gap_threshold = params.get("position_gap_threshold", 15)
+        suppress_sell = deviation < -gap_threshold  # Too short of target → no sells
+        suppress_buy = deviation > gap_threshold    # Too long of target → no buys
+
+        if buy_size > 0 and not suppress_buy:
             orders.append(Order(product, bid_price, buy_size))
-        if sell_size > 0:
+        if sell_size > 0 and not suppress_sell:
             orders.append(Order(product, ask_price, -sell_size))
 
         return orders
