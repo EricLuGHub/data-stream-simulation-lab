@@ -1,18 +1,16 @@
 """
-IMC Prosperity 4 — Round 1 Strategy v2
+IMC Prosperity 4 — Round 1 Strategy v3
 
-Trial 1 results (2098 total):
-  ASH: 988 from 65 trades. Good spread capture but low volume.
-  PEPPER: 1110 from 9 trades. Maxed long immediately due to wrong trend_start,
-          then sat idle. All profit from holding through the trend.
+Trial 2 results (2682 total, up from 2098):
+  ASH: 904 (down from 988). make_spread=1 was too tight — adverse selection.
+       Net position 27 at end = too much inventory buildup.
+  PEPPER: 1778 (up from 1110). Anchoring fix worked. But position oscillated
+          between -3 and +50 instead of riding the trend. Mostly spread profit.
 
-v2 fixes:
-  1. PEPPER: Don't hardcode trend_start. Use first observed price as anchor.
-     Apply known slope (+0.001/tick) to project fair value forward.
-     Actively market-make around the trending fair value instead of buy-and-hold.
-  2. ASH: Tighten make_spread (1 instead of 2), increase make_size (40),
-     reduce take_width to 0 for more aggressive taking.
-  3. Both: Place multiple quote levels to increase fill rate and capital usage.
+v3 changes:
+  ASH: Revert make_spread to 2, increase position_skew to reduce inventory.
+  PEPPER: Time-varying position target — aggressively long early (lots of trend
+          left to capture), flatten toward end. This captures trend + spread.
 """
 
 from datamodel import OrderDepth, TradingState, Order
@@ -28,21 +26,26 @@ POSITION_LIMITS = {
 PARAMS = {
     "ASH_COATED_OSMIUM": {
         "ema_alpha": 0.4,
-        "take_width": 0,           # v1 was 1; with 16-wide spread we never took
-        "make_spread": 1,           # v1 was 2; tighter = more fills
-        "make_size": 40,            # v1 was 25; use more capital
-        "position_skew": 1.5,
+        "take_width": 0,
+        "make_spread": 2,           # v2 was 1 → hurt per-unit profit, revert
+        "make_size": 35,            # v2 was 40 → slight reduction
+        "position_skew": 2.5,       # v2 was 1.5 → stronger to reduce inventory
         "imbalance_weight": 1.0,
     },
     "INTARIAN_PEPPER_ROOT": {
-        "trend_slope": 0.001,       # +1 per 1000 timestamps = +1000 over 1M
-        "take_width": 0,            # v1 was 1
-        "make_spread": 2,           # v1 was 3; tighter since we have better FV now
-        "make_size": 35,            # v1 was 20
-        "position_skew": 1.5,       # v1 was 2.0
+        "trend_slope": 0.001,       # +1 per 1000 timestamps
+        "take_width": 0,
+        "make_spread": 2,
+        "make_size": 35,
+        "position_skew": 2.0,
         "ema_alpha": 0.3,
-        "trend_weight": 0.5,        # Blend EMA with trend projection
-        "trend_position_bias": 0.3, # Fraction of limit to bias long for trend
+        "trend_weight": 0.5,
+        # Time-varying trend capture: target position decays over time
+        # Early: target = +40 (ride the trend up)
+        # Late: target = 0 (flatten to lock in gains)
+        "trend_target_start": 40,   # Target position at t=0
+        "trend_target_end": 0,      # Target position at end of day
+        "max_timestamp": 999900,    # End of trading day
     },
 }
 
@@ -88,9 +91,14 @@ class Trader:
             orders.extend(take_orders)
 
             # --- Phase 2: Passive market making ---
-            make_orders = self._make_orders(
-                product, fair_value, position, limit, params
-            )
+            if product == "INTARIAN_PEPPER_ROOT":
+                make_orders = self._make_orders_trending(
+                    product, fair_value, position, limit, params, state.timestamp
+                )
+            else:
+                make_orders = self._make_orders(
+                    product, fair_value, position, limit, params
+                )
             orders.extend(make_orders)
 
             # --- Safety: clamp to position limits ---
@@ -106,7 +114,7 @@ class Trader:
     # ── Fair value models ──────────────────────────────────────────────
 
     def _ash_fair_value(self, order_depth: OrderDepth, trader_data: dict) -> float:
-        """ASH: EMA of mid price + book imbalance adjustment (mean reversion)."""
+        """ASH: EMA of mid price + book imbalance (mean reversion)."""
         mid = self._get_mid_price(order_depth)
         if mid is None:
             return trader_data.get("ASH_ema", 10000)
@@ -124,19 +132,12 @@ class Trader:
     def _pepper_fair_value(
         self, order_depth: OrderDepth, trader_data: dict, timestamp: int
     ) -> float:
-        """
-        PEPPER ROOT: Anchor on first observed price + linear trend projection,
-        blended with EMA of actual prices.
-
-        v1 bug: hardcoded trend_start=13000 but actual start was ~12000.
-        v2 fix: use first observed mid as anchor, project forward with slope.
-        """
+        """PEPPER: Anchor on first observed price + linear trend, blended with EMA."""
         params = PARAMS["INTARIAN_PEPPER_ROOT"]
 
-        # Get current mid
         mid = self._get_mid_price(order_depth)
 
-        # Anchor: record the first observed price and timestamp
+        # Anchor on first observation
         if "PEPPER_anchor_price" not in trader_data and mid is not None:
             trader_data["PEPPER_anchor_price"] = mid
             trader_data["PEPPER_anchor_ts"] = timestamp
@@ -144,24 +145,109 @@ class Trader:
         anchor_price = trader_data.get("PEPPER_anchor_price", mid if mid else 12000)
         anchor_ts = trader_data.get("PEPPER_anchor_ts", 0)
 
-        # Linear trend estimate from anchor
         elapsed = timestamp - anchor_ts
         trend_estimate = anchor_price + params["trend_slope"] * elapsed
 
         if mid is None:
             return trader_data.get("PEPPER_ema", trend_estimate)
 
-        # EMA of actual mid price
         alpha = params["ema_alpha"]
         prev_ema = trader_data.get("PEPPER_ema", mid)
         ema = alpha * mid + (1 - alpha) * prev_ema
         trader_data["PEPPER_ema"] = ema
 
-        # Blend trend model with EMA
         w = params["trend_weight"]
-        fair_value = w * trend_estimate + (1 - w) * ema
+        return w * trend_estimate + (1 - w) * ema
 
-        return fair_value
+    # ── Order generation ───────────────────────────────────────────────
+
+    def _make_orders(
+        self,
+        product: str,
+        fair_value: float,
+        position: int,
+        limit: int,
+        params: dict,
+    ) -> List[Order]:
+        """Standard mean-reversion market making (ASH)."""
+        orders: List[Order] = []
+        half_spread = params["make_spread"]
+        base_size = params["make_size"]
+        skew_factor = params.get("position_skew", 1.0)
+
+        position_ratio = position / limit
+        price_adjustment = -position_ratio * skew_factor
+        adjusted_fair = fair_value + price_adjustment
+
+        bid_price = math.floor(adjusted_fair - half_spread)
+        ask_price = math.ceil(adjusted_fair + half_spread)
+
+        buy_size = int(base_size * (1 - position_ratio))
+        buy_size = max(1, min(buy_size, limit - position))
+
+        sell_size = int(base_size * (1 + position_ratio))
+        sell_size = max(1, min(sell_size, limit + position))
+
+        if buy_size > 0:
+            orders.append(Order(product, bid_price, buy_size))
+        if sell_size > 0:
+            orders.append(Order(product, ask_price, -sell_size))
+
+        return orders
+
+    def _make_orders_trending(
+        self,
+        product: str,
+        fair_value: float,
+        position: int,
+        limit: int,
+        params: dict,
+        timestamp: int,
+    ) -> List[Order]:
+        """
+        Trend-aware market making (PEPPER).
+
+        Uses a time-varying target position:
+          - Early in day: target = +40 (accumulate long to ride trend)
+          - Late in day: target = 0 (flatten to lock in gains)
+
+        The position skew is applied relative to this moving target,
+        so we naturally buy when below target and sell when above.
+        """
+        orders: List[Order] = []
+        half_spread = params["make_spread"]
+        base_size = params["make_size"]
+        skew_factor = params["position_skew"]
+
+        # Time-varying target position
+        target_start = params["trend_target_start"]
+        target_end = params["trend_target_end"]
+        max_ts = params["max_timestamp"]
+        progress = min(timestamp / max_ts, 1.0) if max_ts > 0 else 0
+        target_position = target_start + (target_end - target_start) * progress
+
+        # Position ratio relative to target (not zero)
+        deviation = position - target_position
+        position_ratio = deviation / limit
+
+        price_adjustment = -position_ratio * skew_factor
+        adjusted_fair = fair_value + price_adjustment
+
+        bid_price = math.floor(adjusted_fair - half_spread)
+        ask_price = math.ceil(adjusted_fair + half_spread)
+
+        buy_size = int(base_size * (1 - position_ratio))
+        buy_size = max(1, min(buy_size, limit - position))
+
+        sell_size = int(base_size * (1 + position_ratio))
+        sell_size = max(1, min(sell_size, limit + position))
+
+        if buy_size > 0:
+            orders.append(Order(product, bid_price, buy_size))
+        if sell_size > 0:
+            orders.append(Order(product, ask_price, -sell_size))
+
+        return orders
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -191,7 +277,6 @@ class Trader:
         orders: List[Order] = []
         take_width = params["take_width"]
 
-        # Buy cheap asks (below fair value)
         if order_depth.sell_orders:
             for ask_price, ask_vol in sorted(order_depth.sell_orders.items()):
                 if ask_price <= fair_value - take_width:
@@ -200,7 +285,6 @@ class Trader:
                         orders.append(Order(product, ask_price, qty))
                         position += qty
 
-        # Sell expensive bids (above fair value)
         if order_depth.buy_orders:
             for bid_price, bid_vol in sorted(
                 order_depth.buy_orders.items(), reverse=True
@@ -212,45 +296,6 @@ class Trader:
                         position -= qty
 
         return position, orders
-
-    def _make_orders(
-        self,
-        product: str,
-        fair_value: float,
-        position: int,
-        limit: int,
-        params: dict,
-    ) -> List[Order]:
-        orders: List[Order] = []
-        half_spread = params["make_spread"]
-        base_size = params["make_size"]
-        skew_factor = params.get("position_skew", 1.0)
-
-        # For trending products, bias position toward long
-        trend_bias = params.get("trend_position_bias", 0)
-        # Shift the "neutral" position: 0 → trend_bias * limit
-        # So position_ratio = 0 when position = bias_target
-        bias_target = trend_bias * limit
-        position_ratio = (position - bias_target) / limit
-
-        price_adjustment = -position_ratio * skew_factor
-        adjusted_fair = fair_value + price_adjustment
-
-        bid_price = math.floor(adjusted_fair - half_spread)
-        ask_price = math.ceil(adjusted_fair + half_spread)
-
-        buy_size = int(base_size * (1 - position_ratio))
-        buy_size = max(1, min(buy_size, limit - position))
-
-        sell_size = int(base_size * (1 + position_ratio))
-        sell_size = max(1, min(sell_size, limit + position))
-
-        if buy_size > 0:
-            orders.append(Order(product, bid_price, buy_size))
-        if sell_size > 0:
-            orders.append(Order(product, ask_price, -sell_size))
-
-        return orders
 
     def _clamp_orders(
         self, orders: List[Order], cur_position: int, limit: int
