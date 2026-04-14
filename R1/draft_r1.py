@@ -1,18 +1,18 @@
 """
-IMC Prosperity 4 — Round 1 Draft Strategy
+IMC Prosperity 4 — Round 1 Strategy v2
 
-Two products, two strategies:
+Trial 1 results (2098 total):
+  ASH: 988 from 65 trades. Good spread capture but low volume.
+  PEPPER: 1110 from 9 trades. Maxed long immediately due to wrong trend_start,
+          then sat idle. All profit from holding through the trend.
 
-1. ASH_COATED_OSMIUM — Mean Reversion
-   - Tight range around ~10000, std ~5, strong mean reversion
-   - cheap_edge ~+1.1–1.3, expensive_edge ~-1.1–1.4
-   - Strategy: EMA fair value + book imbalance, market make around it
-
-2. INTARIAN_PEPPER_ROOT — Trend Following
-   - Linear intraday trend: +1000 per day over 1M timestamps
-   - Day -2: 9998→11001, Day -1: 10998→11998, Day 0: 11998→13000
-   - Day 1 estimate: 13000 → 14000 (slope ≈ +0.001 per timestamp)
-   - Strategy: linear fair value estimate, bias position long early / short late
+v2 fixes:
+  1. PEPPER: Don't hardcode trend_start. Use first observed price as anchor.
+     Apply known slope (+0.001/tick) to project fair value forward.
+     Actively market-make around the trending fair value instead of buy-and-hold.
+  2. ASH: Tighten make_spread (1 instead of 2), increase make_size (40),
+     reduce take_width to 0 for more aggressive taking.
+  3. Both: Place multiple quote levels to increase fill rate and capital usage.
 """
 
 from datamodel import OrderDepth, TradingState, Order
@@ -28,24 +28,21 @@ POSITION_LIMITS = {
 PARAMS = {
     "ASH_COATED_OSMIUM": {
         "ema_alpha": 0.4,
-        "take_width": 1,
-        "make_spread": 2,
-        "make_size": 25,
+        "take_width": 0,           # v1 was 1; with 16-wide spread we never took
+        "make_spread": 1,           # v1 was 2; tighter = more fills
+        "make_size": 40,            # v1 was 25; use more capital
         "position_skew": 1.5,
         "imbalance_weight": 1.0,
     },
     "INTARIAN_PEPPER_ROOT": {
-        # Trend parameters derived from data:
-        # Each day starts ~1000 above previous day start, trends +1000 intraday
-        # Day 1 extrapolation: start ~13000, end ~14000
-        "trend_start": 13000,
         "trend_slope": 0.001,       # +1 per 1000 timestamps = +1000 over 1M
-        "take_width": 1,
-        "make_spread": 3,
-        "make_size": 20,
-        "position_skew": 2.0,
-        "ema_alpha": 0.3,           # Blend EMA with trend estimate
-        "trend_weight": 0.5,        # How much to trust linear model vs EMA
+        "take_width": 0,            # v1 was 1
+        "make_spread": 2,           # v1 was 3; tighter since we have better FV now
+        "make_size": 35,            # v1 was 20
+        "position_skew": 1.5,       # v1 was 2.0
+        "ema_alpha": 0.3,
+        "trend_weight": 0.5,        # Blend EMA with trend projection
+        "trend_position_bias": 0.3, # Fraction of limit to bias long for trend
     },
 }
 
@@ -128,28 +125,39 @@ class Trader:
         self, order_depth: OrderDepth, trader_data: dict, timestamp: int
     ) -> float:
         """
-        PEPPER ROOT: Blend a linear trend model with EMA.
+        PEPPER ROOT: Anchor on first observed price + linear trend projection,
+        blended with EMA of actual prices.
 
-        Linear model: price = trend_start + trend_slope * timestamp
-        EMA: adaptive to actual prices
-        Final: weighted blend of both
+        v1 bug: hardcoded trend_start=13000 but actual start was ~12000.
+        v2 fix: use first observed mid as anchor, project forward with slope.
         """
         params = PARAMS["INTARIAN_PEPPER_ROOT"]
 
-        # Linear trend estimate
-        trend_estimate = params["trend_start"] + params["trend_slope"] * timestamp
-
-        # EMA of actual mid price
+        # Get current mid
         mid = self._get_mid_price(order_depth)
+
+        # Anchor: record the first observed price and timestamp
+        if "PEPPER_anchor_price" not in trader_data and mid is not None:
+            trader_data["PEPPER_anchor_price"] = mid
+            trader_data["PEPPER_anchor_ts"] = timestamp
+
+        anchor_price = trader_data.get("PEPPER_anchor_price", mid if mid else 12000)
+        anchor_ts = trader_data.get("PEPPER_anchor_ts", 0)
+
+        # Linear trend estimate from anchor
+        elapsed = timestamp - anchor_ts
+        trend_estimate = anchor_price + params["trend_slope"] * elapsed
+
         if mid is None:
             return trader_data.get("PEPPER_ema", trend_estimate)
 
+        # EMA of actual mid price
         alpha = params["ema_alpha"]
         prev_ema = trader_data.get("PEPPER_ema", mid)
         ema = alpha * mid + (1 - alpha) * prev_ema
         trader_data["PEPPER_ema"] = ema
 
-        # Blend: trust trend model partially, EMA partially
+        # Blend trend model with EMA
         w = params["trend_weight"]
         fair_value = w * trend_estimate + (1 - w) * ema
 
@@ -183,6 +191,7 @@ class Trader:
         orders: List[Order] = []
         take_width = params["take_width"]
 
+        # Buy cheap asks (below fair value)
         if order_depth.sell_orders:
             for ask_price, ask_vol in sorted(order_depth.sell_orders.items()):
                 if ask_price <= fair_value - take_width:
@@ -191,6 +200,7 @@ class Trader:
                         orders.append(Order(product, ask_price, qty))
                         position += qty
 
+        # Sell expensive bids (above fair value)
         if order_depth.buy_orders:
             for bid_price, bid_vol in sorted(
                 order_depth.buy_orders.items(), reverse=True
@@ -216,7 +226,13 @@ class Trader:
         base_size = params["make_size"]
         skew_factor = params.get("position_skew", 1.0)
 
-        position_ratio = position / limit
+        # For trending products, bias position toward long
+        trend_bias = params.get("trend_position_bias", 0)
+        # Shift the "neutral" position: 0 → trend_bias * limit
+        # So position_ratio = 0 when position = bias_target
+        bias_target = trend_bias * limit
+        position_ratio = (position - bias_target) / limit
+
         price_adjustment = -position_ratio * skew_factor
         adjusted_fair = fair_value + price_adjustment
 
