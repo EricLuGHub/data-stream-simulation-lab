@@ -1,0 +1,2 @@
+trial,algorithm,log,round,final_profit,graph_peak,graph_valley,graph_drawdown,breakeven_timestamp,ash_rows,ash_days,ash_mid_first,ash_mid_last,ash_spread_mean,ash_spread_median,ash_top_depth_mean
+trial15,R1/trial15/125506.py,R1/erick/backtest_reports/trial15_backtest.log,1,7624.0,330460.0,-252853.0,583313.0,2600.0,27644,3,10000.0,10007.0,16.175227897554624,16.0,12.156634351034583

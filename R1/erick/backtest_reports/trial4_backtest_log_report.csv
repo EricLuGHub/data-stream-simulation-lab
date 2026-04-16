@@ -1,0 +1,2 @@
+trial,path,round,status,final_profit,graph_final,graph_peak,graph_valley,graph_drawdown,breakeven_timestamp,ash_rows,ash_days,ash_mid_first,ash_mid_last,ash_spread_mean,ash_spread_median,ash_top_depth_mean
+trial4,/Users/ericlu/Works/imcp4/imcprosp4/R1/trial4/123161.json,1,FINISHED,4927.9375,4924.125,4924.125,0.0,47.375,1200.0,914,1,10001.5,10003.0,16.25382932166302,16.0,12.389496717724288
