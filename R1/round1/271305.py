@@ -13,7 +13,7 @@ LIMITS = {
 
 
 class Trader:
-    """Trial 39: ASH from trial18 + PEPPER from trial26."""
+    """Trial 40: ASH from trial18 + PEPPER improved trend-following."""
 
     def run(self, state: TradingState):
         td = self._load_td(state.traderData)
@@ -97,7 +97,7 @@ class Trader:
 
         return self._clamp(orders, state.position.get(ASH, 0), LIMITS[ASH])
 
-    # --------------------- PEPPER (trial26 logic) ---------------------
+    # --------------------- PEPPER (improved trend-following) ---------------------
 
     def _trade_pepper(self, state: TradingState, td: dict) -> List[Order]:
         od = state.order_depths[PEPPER]
@@ -121,16 +121,21 @@ class Trader:
         hist = hist[-80:]
         td["pepper_mid_hist"] = hist
 
-        short = hist[-8:] if len(hist) >= 8 else hist
-        long = hist[-28:] if len(hist) >= 28 else hist
+        short = hist[-4:] if len(hist) >= 4 else hist
+        long = hist[-20:] if len(hist) >= 20 else hist
         short_mean = sum(short) / len(short)
         long_mean = sum(long) / len(long)
 
+        # Faster trend detection with lower threshold
         trend = 0
-        if short_mean > long_mean + 0.6:
+        if short_mean > long_mean + 0.3:
             trend = 1
-        elif short_mean < long_mean - 0.6:
+        elif short_mean < long_mean - 0.3:
             trend = -1
+
+        # Assume uptrend early before we have enough data
+        if len(hist) < 6:
+            trend = 1
 
         if "pepper_anchor_px" not in td:
             td["pepper_anchor_px"] = mid
@@ -149,49 +154,68 @@ class Trader:
             r_std = 0.8
         z = resid / r_std
 
-        progress = min(max(ts / 99900.0, 0.0), 1.0)
-        base_target = 44.0 + (18.0 - 44.0) * progress
+        # Keep target high when trending up -- don't decay over time
+        if trend > 0:
+            target = 48.0
+        elif trend < 0:
+            target = 10.0
+        else:
+            target = 38.0
 
-        target = base_target + (6 if trend > 0 else (-8 if trend < 0 else 0))
         if z <= -1.2:
-            target += 5
+            target += 2
         if z >= 2.4:
-            target -= 8
+            target -= 4
         target = max(4.0, min(48.0, target))
 
         orders: List[Order] = []
 
-        buy_take_cap = 10 if (trend > 0 or z <= -1.0) else 6
+        # Aggressive buy-taking: take any ask at or below fair+2 when trending up
+        take_width = 2 if trend > 0 else 1
+        buy_take_cap = 15 if trend > 0 else 6
         for ask_px, ask_vol in sorted(od.sell_orders.items()):
-            if ask_px <= fair + 1:
+            if ask_px <= fair + take_width:
                 qty = min(-ask_vol, LIMITS[PEPPER] - pos, buy_take_cap)
                 if qty > 0:
                     orders.append(Order(PEPPER, ask_px, qty))
                     pos += qty
 
-        if z >= 2.8 and pos > target + 3:
+        # Only sell-take when trend is down and we're overweight
+        if trend < 0 and pos > target + 5:
             for bid_px, bid_vol in sorted(od.buy_orders.items(), reverse=True):
-                if bid_px >= fair + 1:
+                if bid_px >= fair - 1:
                     qty = min(bid_vol, LIMITS[PEPPER] + pos, 7)
                     if qty > 0:
                         orders.append(Order(PEPPER, bid_px, -qty))
                         pos -= qty
 
         inv_ratio = (pos - target) / LIMITS[PEPPER]
-        spread = 2 if trend >= 0 else 3
-        bid_px = math.floor(fair - spread - 2.0 * inv_ratio)
-        ask_px = math.ceil(fair + spread - 2.0 * inv_ratio)
+
+        # Tight bid spread to build position; wide ask spread to avoid selling
+        if trend > 0:
+            bid_spread = 1
+            ask_spread = 6
+        elif trend < 0:
+            bid_spread = 5
+            ask_spread = 1
+        else:
+            bid_spread = 2
+            ask_spread = 3
+
+        bid_px = math.floor(fair - bid_spread - 2.0 * inv_ratio)
+        ask_px = math.ceil(fair + ask_spread - 2.0 * inv_ratio)
         if bid_px >= ask_px:
             bid_px = ask_px - 1
 
         buy_cap = max(0, LIMITS[PEPPER] - pos)
         sell_cap = max(0, LIMITS[PEPPER] + pos)
 
-        buy_qty = min(buy_cap, max(1, int(30 * (1 - inv_ratio))))
-        sell_qty = min(sell_cap, max(1, int(18 * (1 + inv_ratio))))
+        buy_qty = min(buy_cap, max(1, int(35 * (1 - inv_ratio))))
+        sell_qty = min(sell_cap, max(1, int(8 * (1 + inv_ratio))))
 
-        suppress_sell = (trend > 0 and pos < target - 2) or (z <= -1.4)
-        suppress_buy = (trend < 0 and pos > target + 8)
+        # Suppress sells aggressively when trending up
+        suppress_sell = trend > 0 and pos <= target
+        suppress_buy = trend < 0 and pos >= target
 
         if buy_qty > 0 and not suppress_buy:
             orders.append(Order(PEPPER, bid_px, buy_qty))
