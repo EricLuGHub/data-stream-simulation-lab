@@ -15,3 +15,4 @@
 
 ## Sanity Check
 The merged trial produces coherent, stable numbers and matches the strongest prior merged baseline in this branch.
+PNL: 4.3k
