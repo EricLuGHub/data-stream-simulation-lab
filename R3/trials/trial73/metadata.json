@@ -1,0 +1,31 @@
+{
+  "family": "smile_highrisk",
+  "params": {
+    "edge_mult": 0.85,
+    "join_size": 18,
+    "max_take_mid": 20,
+    "max_take_wing": 12,
+    "sigma_scale": 1.05,
+    "tau_scale": 320.0,
+    "traded_list": [
+      "VEV_4000",
+      "VEV_4500",
+      "VEV_5000",
+      "VEV_5100",
+      "VEV_5200",
+      "VEV_5300",
+      "VEV_5400",
+      "VEV_5500",
+      "VEV_6000",
+      "VEV_6500"
+    ],
+    "velv_ema_alpha": 0.11,
+    "velv_enable": "True",
+    "velv_make_edge": 1.5,
+    "velv_signal_gate": 0.01,
+    "velv_signal_weight": 1.8,
+    "velv_take_edge": 1.0
+  },
+  "set": "VELV_VEV_TARGET",
+  "trial": 73
+}

@@ -1,0 +1,39 @@
+{
+  "trial": 91,
+  "set": "PACK_PLUS_VELV_VEV",
+  "family": "merged_trial24_trial72",
+  "parents": [24, 72],
+  "notes": "Merged PACK lowrisk (trial24) with VEV smile_voucher_only (trial72).",
+  "params": {
+    "pack": {
+      "product": "HYDROGEL_PACK",
+      "limit": 200,
+      "ema_alpha": 0.12,
+      "signal_weight": 0.8,
+      "take_edge": 0.8,
+      "make_edge": 2.2,
+      "inventory_skew": 2.2,
+      "signal_gate": 0.05,
+      "max_take": 10,
+      "quote_size": 12
+    },
+    "vev": {
+      "underlying": "VELVETFRUIT_EXTRACT",
+      "tau_scale": 320.0,
+      "sigma_scale": 1.05,
+      "edge_mult": 0.85,
+      "join_size": 12,
+      "max_take_mid": 14,
+      "max_take_wing": 8,
+      "traded": [
+        "VEV_4500",
+        "VEV_5000",
+        "VEV_5100",
+        "VEV_5200",
+        "VEV_5300",
+        "VEV_5400",
+        "VEV_6000"
+      ]
+    }
+  }
+}

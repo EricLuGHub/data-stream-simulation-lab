@@ -1,0 +1,28 @@
+{
+  "family": "smile_voucher_only",
+  "params": {
+    "edge_mult": 0.85,
+    "join_size": 12,
+    "max_take_mid": 14,
+    "max_take_wing": 8,
+    "sigma_scale": 0.9,
+    "tau_scale": 320.0,
+    "traded_list": [
+      "VEV_4500",
+      "VEV_5000",
+      "VEV_5100",
+      "VEV_5200",
+      "VEV_5300",
+      "VEV_5400",
+      "VEV_6000"
+    ],
+    "velv_ema_alpha": 0.06,
+    "velv_enable": "False",
+    "velv_make_edge": 1.9,
+    "velv_signal_gate": 0.03,
+    "velv_signal_weight": 1.0,
+    "velv_take_edge": 1.2
+  },
+  "set": "VELV_VEV_TARGET",
+  "trial": 62
+}

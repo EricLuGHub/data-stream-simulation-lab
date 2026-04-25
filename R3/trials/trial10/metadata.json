@@ -1,0 +1,15 @@
+{
+  "family": "pack_unconventional",
+  "params": {
+    "ema_alpha": 0.05,
+    "inventory_skew": 1.5,
+    "make_edge": 1.5,
+    "max_take": 16,
+    "quote_size": 18,
+    "signal_gate": 0.0,
+    "signal_weight": 0.8,
+    "take_edge": 1.4
+  },
+  "set": "PACK_ONLY",
+  "trial": 10
+}

@@ -1,0 +1,36 @@
+{
+  "trial": 92,
+  "set": "MERGED_PACK_VELV_VEV",
+  "family": "merge_trial24_trial72",
+  "parent_trials": [24, 72],
+  "notes": "PACK logic from trial24 + VEV voucher-only logic from trial72 in one Trader.",
+  "params": {
+    "pack": {
+      "ema_alpha": 0.12,
+      "signal_weight": 0.8,
+      "take_edge": 0.8,
+      "make_edge": 2.2,
+      "inventory_skew": 2.2,
+      "signal_gate": 0.05,
+      "max_take": 10,
+      "quote_size": 12
+    },
+    "voucher": {
+      "tau_scale": 320.0,
+      "sigma_scale": 1.05,
+      "edge_mult": 0.85,
+      "join_size": 12,
+      "max_take_wing": 8,
+      "max_take_mid": 14,
+      "traded_list": [
+        "VEV_4500",
+        "VEV_5000",
+        "VEV_5100",
+        "VEV_5200",
+        "VEV_5300",
+        "VEV_5400",
+        "VEV_6000"
+      ]
+    }
+  }
+}

@@ -1,0 +1,2 @@
+trial,set,family,status,error,total_pnl,max_drawdown,score,curve_std,curve_step_std,day_0_pnl,day_1_pnl
+92,MERGED_PACK_VELV_VEV,merge_trial24_trial72,ok,,31053.0,61901.0,9357.86137548596,10159.274673061042,595.7724902808488,7307.0,23746.0

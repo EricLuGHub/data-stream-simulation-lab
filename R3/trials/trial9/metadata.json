@@ -1,0 +1,15 @@
+{
+  "family": "pack_lowrisk",
+  "params": {
+    "ema_alpha": 0.05,
+    "inventory_skew": 2.2,
+    "make_edge": 2.2,
+    "max_take": 10,
+    "quote_size": 12,
+    "signal_gate": 0.05,
+    "signal_weight": 0.8,
+    "take_edge": 1.4
+  },
+  "set": "PACK_ONLY",
+  "trial": 9
+}

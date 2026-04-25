@@ -1,0 +1,15 @@
+{
+  "family": "pack_conservative",
+  "params": {
+    "ema_alpha": 0.05,
+    "inventory_skew": 1.8,
+    "make_edge": 1.9,
+    "max_take": 12,
+    "quote_size": 14,
+    "signal_gate": 0.03,
+    "signal_weight": 0.8,
+    "take_edge": 0.8
+  },
+  "set": "PACK_ONLY",
+  "trial": 2
+}

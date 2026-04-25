@@ -1,0 +1,15 @@
+{
+  "family": "pack_balanced",
+  "params": {
+    "ema_alpha": 0.12,
+    "inventory_skew": 1.2,
+    "make_edge": 1.6,
+    "max_take": 14,
+    "quote_size": 16,
+    "signal_gate": 0.02,
+    "signal_weight": 0.8,
+    "take_edge": 1.4
+  },
+  "set": "PACK_ONLY",
+  "trial": 26
+}
