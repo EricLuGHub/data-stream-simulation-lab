@@ -14,4 +14,15 @@ Day 2 is excluded from this analysis to keep it held out for later backtest vali
 - Mean trade-vs-mid edge: +0.17
 - Mean imbalance-to-next-mid correlation: +0.30
 
-Takeaway: PACK is a tight, high-liquidity series around 10,000 with a persistent but moderate imbalance signal. The price path shows clear intraday wandering, but no obvious regime break across the two in-sample days.
+New diagnostics (from expanded notebook analysis):
+
+- Imbalance event study (robust buckets):
+	- `low_imbalance` avg next move: -3.90
+	- `high_imbalance` avg next move: +4.09
+	- `mid_imbalance` avg next move: about 0.00
+- Mean-reversion proxy: AR(1) beta on next mid changes is -0.131 (mild short-horizon reversal).
+- Spread regime is mostly stable around 15-16, but the rare wider-spread regime (17) has higher next-step absolute move (1.79 vs 1.66).
+- Intraday diagnostics are fairly flat (abs next move roughly 1.59 to 1.74), so there is no strong time-of-day edge in days 0-1.
+- Signed trade-flow proxy has near-zero linear relation to the next move (corr about -0.007), so order-book imbalance is currently the better directional feature.
+
+Takeaway: PACK has a usable directional microstructure signal, but it is concentrated in imbalance extremes rather than smooth linear flow. For modeling, treat it as an "extreme-state" signal product with mild reversion and mostly stable intraday behavior.
